@@ -1,6 +1,6 @@
 #!/bin/sh
 # ~/.config/auto-pip/on-switch: runs after auto-pip is switched, with "on" or
 # "off". Make it executable. Use it to switch other things along with it,
-# for example another player's picture-in-picture script:
+# for example:
 #
-#   [ "$1" = off ] && my-player-pip --stop
+#   [ "$1" = off ] && my-other-script --stop

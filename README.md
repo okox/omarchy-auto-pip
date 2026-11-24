@@ -1,26 +1,39 @@
 # Auto Picture-in-Picture for Omarchy
 
 Watching a video and need to jump to another desktop? With this, the video
-follows you. Leave a desktop where a browser is playing a video and it pops out
-into the browser's own picture-in-picture window, pinned in a corner of every
-desktop. Go back to that desktop and the PiP closes; the video carries on in
-its tab as if nothing happened.
+follows you. Leave a desktop where a video is playing and it pops out into a
+small window pinned in a corner of every desktop. Go back to that desktop and
+it pops back in as if nothing happened.
+
+It works with two kinds of source:
+
+- **Browsers** (Chromium, Brave, Chrome, Vivaldi, Edge): YouTube, Twitch or any
+  other site. The video moves into the browser's own picture-in-picture
+  window and carries on in its tab when it closes.
+- **Video players** (mpv, VLC, Celluloid, or any you add): the player's own
+  window shrinks into the corner, then returns to its size, place and
+  fullscreen. Anything that plays in mpv counts, such as an Ace Stream or IPTV
+  player.
 
 For [Omarchy](https://omarchy.org) and other [Hyprland](https://hyprland.org)
-setups, with Chromium-based browsers (Chromium, Brave, Chrome, Vivaldi, Edge).
-Tested with Chromium; the others share its machinery but are untested so far.
+setups. Tested with Chromium and mpv; the others share their machinery but are
+untested so far.
 
 ![The bar icon, on and off](assets/bar.png)
 
 ## How it behaves
 
 - **Only when something is playing.** A paused video stays where it is.
+  (Players that don't report whether they're playing count as playing while
+  their window is open; for mpv, install `mpv-mpris`, which Omarchy has.)
+- **One at a time.** If several things play on the desktop you leave, the
+  window you used last wins.
 - **It remembers where you put it.** Drag or resize the PiP once and it opens
   there from then on.
-- **It never moves you.** Opening the PiP needs a keypress in the browser, so
-  for a moment the keyboard goes to the browser and straight back to the
-  window you were using. If you type at that exact instant, a key could land
-  in the browser.
+- **It never moves you.** Opening a browser's PiP needs a keypress in the
+  browser, so for a moment the keyboard goes to the browser and straight back
+  to the window you were using. If you type at that exact instant, a key could
+  land in the browser.
 - **On/off switch:** the bar icon (dimmed and crossed out when off), or
   `auto-pip toggle` on a key. Switching off also closes an open PiP.
 - A PiP you open yourself is left alone.
@@ -29,7 +42,7 @@ Tested with Chromium; the others share its machinery but are untested so far.
 
 - Hyprland **0.56 or newer** (Lua dispatchers).
 - `jq`, `socat`, `busctl` (systemd) and `flock`. All come with Omarchy.
-- A Chromium-based browser.
+- A Chromium-based browser and/or a video player.
 - Omarchy for the bar icon. Without it, everything else works; see
   [Without Omarchy](#without-omarchy).
 
@@ -73,12 +86,15 @@ o.bind("SUPER + ALT + P", "Auto picture-in-picture on/off", "auto-pip toggle")
 `systemctl --user restart auto-pip`.
 
 ```bash
-TITLE='YouTube|Twitch'   # only pop out from these sites (window title); default: any
+TITLE='YouTube|Twitch'   # browsers: only these sites (window title); default: any
+PLAYERS='mpv|vlc|haruna' # player window classes; default: mpv|vlc|celluloid; '' = none
 SIZE='480 270'           # first PiP size; afterwards it remembers yours
 NOTIFY=0                 # no notification when switching on/off
 ```
 
-To switch something else along with it (another player's PiP script, say),
+A player's window class is in `hyprctl clients` (the `class:` line).
+
+To switch something else along with it,
 put an executable `~/.config/auto-pip/on-switch`; it gets `on` or `off`
 ([example](examples/on-switch)).
 
@@ -93,18 +109,23 @@ auto-pip watch               the watcher itself (run by auto-pip.service)
 
 ## How it works
 
-Browsers only let a page open picture-in-picture in response to something
-you do, such as a click or a keypress. So the project has two halves:
+A **watcher** (`bin/auto-pip`) listens to Hyprland's desktop changes. When
+you leave a desktop, it looks there for a browser or player window, most
+recently used first, and asks its media player on D-Bus (MPRIS) whether it's
+playing.
 
-- **A tiny browser extension** with two keyboard shortcuts, Alt+Shift+8 (open
+- **Players:** it floats, shrinks, pins and moves the player's window with
+  Hyprland dispatchers, after noting its size, place and fullscreen. Coming
+  back reverses all of it.
+- **Browsers:** a page may only open picture-in-picture in response to
+  something you do, such as a click or a keypress. So there's a second half:
+
+  **a tiny browser extension** with two keyboard shortcuts, Alt+Shift+8 (open
   PiP for the biggest playing video in the tab) and Alt+Shift+9 (close it).
   It has no background activity, reads nothing and sends nothing anywhere;
-  it only acts when one of its shortcuts is pressed.
-- **A watcher** (`bin/auto-pip`) that listens to Hyprland's desktop changes.
-  When you leave a desktop, it checks whether the browser window you left is
-  playing (through the browser's media player on D-Bus, MPRIS) and, if so,
-  sends that window the shortcut with Hyprland's `send_shortcut`. It then
-  pins the PiP in its spot; when you come back it sends the closing one.
+  it only acts when one of its shortcuts is pressed. The watcher sends the
+  browser window that shortcut with Hyprland's `send_shortcut`, pins the PiP
+  in its spot, and sends the closing one when you come back.
 
 If a shortcut clashes with something, change it at
 `chrome://extensions/shortcuts` and set `MODS`, `OPEN_KEY` and `CLOSE_KEY`
@@ -128,7 +149,10 @@ For Waybar, a custom module can show `auto-pip status` and run
 - **Nothing happens:** check the browser has loaded the extension
   (`chrome://extensions`) and that its shortcuts are set
   (`chrome://extensions/shortcuts`). Then `journalctl --user -u auto-pip`.
-- **Pops out from the wrong window:** set `TITLE` so only video sites count.
+- **Pops out from the wrong window:** set `TITLE` so only video sites count,
+  or `PLAYERS` to just the players you want.
+- **A player didn't pop out:** check its class (`hyprctl clients`) is in
+  `PLAYERS`, and that it's playing (`busctl --user list | grep mpris`).
 - **Flatpak or Snap browsers** aren't supported yet.
 
 ## Uninstall

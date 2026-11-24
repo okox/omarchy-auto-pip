@@ -1,27 +1,28 @@
 #!/bin/bash
 # Auto picture-in-picture for Hyprland.
 #
-# Leave a desktop where a browser is playing a video and the video pops out
-# into the browser's own picture-in-picture window, pinned so it follows you to
-# every desktop. Go back to that desktop and the PiP closes; the video carries
-# on in its tab.
+# Leave a desktop where a video is playing and it follows you in a small
+# pinned window on every desktop. Go back to that desktop and it pops back in.
+# Two kinds of source:
+#   browsers  the video pops out into the browser's own picture-in-picture
+#             window (through the extension in ../extension) and carries on in
+#             its tab when it closes
+#   players   the player's own window (mpv, VLC, Celluloid...) shrinks into the
+#             corner, then returns to its size, place and fullscreen
 #
 #   auto-pip watch                 the watcher (run by auto-pip.service)
 #   auto-pip on | off | toggle     switch it on or off (also closes an open PiP)
 #   auto-pip status                prints "on" or "off"
 #   auto-pip close                 close the PiP it opened, now
 #
-# The browser side is the extension in ../extension: its two keyboard
-# shortcuts open and close PiP for the playing video. Keyboard shortcuts count
-# as a user gesture, which browsers require before a page may open PiP.
-#
 # Settings: ~/.config/auto-pip/config (see examples/config).
 
-VERSION=1.0.0
+VERSION=1.1.0
 
 # ---------------------------------------------------------------- settings --
-BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge' # window classes (regex, any case)
-TITLE=''                       # only windows whose title matches (regex); empty = any
+BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge' # browser window classes (regex, any case)
+TITLE=''                       # browsers: only windows whose title matches (regex); empty = any
+PLAYERS='mpv|vlc|celluloid'    # player window classes (regex, any case); empty = none
 SIZE='480 270'                 # first-time PiP size; afterwards it remembers yours
 MARGIN=12                      # gap to the screen corner
 MODS='ALT SHIFT' OPEN_KEY=8 CLOSE_KEY=9 # must match the extension's shortcuts
@@ -34,8 +35,12 @@ SPOT_FILE="$STATE_DIR/spot"    # "x y w h" where you last left the PiP
 
 OFF="$STATE_DIR/off"           # exists = switched off
 RUN="${XDG_RUNTIME_DIR:-/run/user/$UID}/auto-pip"
-state="$RUN/open"              # "<browser window address> <home desktop>" while a PiP is open
+# While a PiP is open:
+#   browser <browser window> <home desktop>
+#   player  <player window> <home desktop> <x> <y> <w> <h> <fullscreen> <floating>
+state="$RUN/open"
 PIP_TITLE='^Picture.?in.?[Pp]icture$'
+TAG=auto-pip                   # window tag on a player while it is the PiP
 read -r PIP_W PIP_H <<<"$SIZE"
 mkdir -p "$STATE_DIR" "$RUN"
 
@@ -48,54 +53,69 @@ key() { # $1 = window address, $2 = key: send the extension's shortcut to that w
 
 active_desktop() { hyprctl activeworkspace -j | jq -r .id; }
 
-pip_window() { # the browser's PiP window as JSON, empty if none
+client() { # $1 = address: that window as JSON, empty if it's gone
+  hyprctl clients -j | jq -c --arg a "$1" 'first(.[] | select(.address == $a and .mapped)) // empty'
+}
+
+pip_window() { # a browser's PiP window as JSON, empty if none
   hyprctl clients -j | jq -c --arg t "$PIP_TITLE" 'first(.[] | select(.mapped and (.title | test($t)))) // empty'
 }
 
-playing() { # $1 = browser pid: is that browser playing media right now? (its MPRIS player)
-  local name
-  for name in $(busctl --user list --no-legend --no-pager 2>/dev/null |
-    awk -v p="$1" '$1 ~ "^org\\.mpris\\.MediaPlayer2\\..*\\.instance" p "$" {print $1}'); do
-    busctl --user get-property "$name" /org/mpris/MediaPlayer2 \
-      org.mpris.MediaPlayer2.Player PlaybackStatus 2>/dev/null | grep -q '"Playing"' && return 0
+media() { # $1 = pid: Playing / Paused / Stopped from its MPRIS player, "none" if it has none
+  local names name s out=none
+  # matched by the bus connection's pid, or by the pid browsers put in the name
+  names=$(busctl --user list --no-legend --no-pager 2>/dev/null |
+    awk -v p="$1" '$1 ~ /^org\.mpris\.MediaPlayer2\./ && ($2 == p || $1 ~ "\\.instance" p "$") {print $1}')
+  for name in $names; do
+    s=$(busctl --user get-property "$name" /org/mpris/MediaPlayer2 \
+      org.mpris.MediaPlayer2.Player PlaybackStatus 2>/dev/null | awk -F'"' '{print $2}')
+    [[ $s == Playing ]] && { echo Playing; return; }
+    [[ -n $s ]] && out=$s
   done
-  return 1
+  echo "$out"
 }
 
-browser_on() { # $1 = desktop: "address pid" of the most recently used browser window there
-  hyprctl clients -j | jq -r --argjson ws "$1" --arg b "$BROWSERS" --arg t "$TITLE" --arg p "$PIP_TITLE" '
-    [.[] | select(.workspace.id == $ws and .mapped and (.class | test($b; "i"))
-                  and (.title | test($t)) and (.title | test($p) | not))]
-    | sort_by(.focusHistoryID) | first(.[] | "\(.address) \(.pid)") // empty'
+sources_on() { # $1 = desktop: "kind address pid" per browser/player window there, most recently used first
+  hyprctl clients -j | jq -r --argjson ws "$1" --arg b "$BROWSERS" --arg t "$TITLE" --arg pl "$PLAYERS" --arg p "$PIP_TITLE" '
+    [.[] | select(.workspace.id == $ws and .mapped and (.pinned | not) and (.title | test($p) | not))
+         | if (.class | test($b; "i")) and (.title | test($t)) then . + {kind: "browser"}
+           elif $pl != "" and (.class | test("^(" + $pl + ")$"; "i")) then . + {kind: "player"}
+           else empty end]
+    | sort_by(.focusHistoryID) | .[] | "\(.kind) \(.address) \(.pid)"'
 }
 
 no_titlebar() { # Omarchy draws a title bar on windows on floating desktops; not on the PiP
   disp "hl.dsp.window.tag({ window = \"address:$1\", tag = \"-omarchy-floating-workspace\" })"
 }
 
-place() { # $1 = PiP window JSON: into the remembered spot, else the bottom-right corner
-  local w=$1 addr mon x y pw=$PIP_W ph=$PIP_H sx sy sw sh
-  addr=$(jq -r .address <<<"$w")
+raise() { disp "hl.dsp.window.alter_zorder({ window = \"address:$1\", mode = \"top\" })"; }
+
+spot() { # prints "x y w h": the remembered spot if it fits this screen, else the bottom-right corner
+  local mon x y sx sy sw sh
   mon=$(hyprctl monitors -j | jq -c 'first(.[] | select(.focused))')
-  x=$(jq --argjson w "$pw" --argjson m "$MARGIN" '.x + (.width / .scale | floor) - .reserved[2] - $w - $m' <<<"$mon")
-  y=$(jq --argjson h "$ph" --argjson m "$MARGIN" '.y + (.height / .scale | floor) - .reserved[3] - $h - $m' <<<"$mon")
-  # the remembered spot, if it still fits on this screen
   if [[ -s $SPOT_FILE ]] && read -r sx sy sw sh <"$SPOT_FILE" &&
     jq -e --argjson x "$sx" --argjson y "$sy" --argjson w "$sw" --argjson h "$sh" \
       '$w >= 160 and $h >= 90 and $x >= .x and $y >= .y and
        $x + $w <= .x + (.width / .scale | floor) and $y + $h <= .y + (.height / .scale | floor)' <<<"$mon" >/dev/null 2>&1; then
-    x=$sx y=$sy pw=$sw ph=$sh
+    echo "$sx $sy $sw $sh"
+    return
   fi
-  no_titlebar "$addr"
-  disp "hl.dsp.window.resize({ window = \"address:$addr\", x = $pw, y = $ph })"
-  disp "hl.dsp.window.move({ window = \"address:$addr\", x = $x, y = $y })"
-  disp "hl.dsp.window.alter_zorder({ window = \"address:$addr\", mode = \"top\" })"
+  x=$(jq --argjson w "$PIP_W" --argjson m "$MARGIN" '.x + (.width / .scale | floor) - .reserved[2] - $w - $m' <<<"$mon")
+  y=$(jq --argjson h "$PIP_H" --argjson m "$MARGIN" '.y + (.height / .scale | floor) - .reserved[3] - $h - $m' <<<"$mon")
+  echo "$x $y $PIP_W $PIP_H"
+}
+
+current() { # the open PiP's window as JSON, empty if none
+  local kind addr
+  [[ -s $state ]] || return
+  read -r kind addr _ <"$state"
+  if [[ $kind == browser ]]; then pip_window; else client "$addr"; fi
 }
 
 remember() { # save where the PiP is, after you've dragged or resized it
   local w
-  w=$(pip_window)
-  [[ -n $w && -s $state ]] || return
+  w=$(current)
+  [[ -n $w && $(jq .pinned <<<"$w") == true ]] || return
   jq -r '"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"' <<<"$w" >"$SPOT_FILE.tmp" && mv "$SPOT_FILE.tmp" "$SPOT_FILE"
 }
 
@@ -113,53 +133,167 @@ refocus() { # $1 = window to give the keyboard back to (sending a key moves it),
   [[ -n $1 && $(active_desktop) == "$2" ]] && disp "hl.dsp.focus({ window = \"address:$1\" })"
 }
 
-open_pip() { # $1 = desktop we left, $2 = desktop we're on
-  [[ -e $OFF ]] && return
-  [[ -n $(pip_window) ]] && return # a PiP is already up
-  local browser bpid before w
-  read -r browser bpid <<<"$(browser_on "$1")"
-  [[ -n $browser ]] && playing "$bpid" || return
-  sleep 0.15 # let Hyprland finish switching and focus a window there
-  [[ $(active_desktop) == "$2" ]] || return # moved on again
-  before=$(focused_on "$2")
-  key "$browser" "$OPEN_KEY"
+# ---------------------------------------------------------------- browsers --
+browser_open() { # $1 = browser window, $2 = its desktop, $3 = desktop we're on
+  local before w x y pw ph
+  before=$(focused_on "$3")
+  key "$1" "$OPEN_KEY"
   for _ in {1..12}; do
     sleep 0.1
     w=$(pip_window)
     [[ -n $w ]] && break
   done
-  refocus "$before" "$2"
-  [[ -n $w ]] || return # nothing was playing in that window's tab
-  echo "$browser $1" >"$state"
-  place "$w"
+  refocus "$before" "$3"
+  [[ -n $w ]] || return 1 # nothing was playing in that window's tab
+  echo "browser $1 $2" >"$state"
+  read -r x y pw ph <<<"$(spot)"
+  local addr
+  addr=$(jq -r .address <<<"$w")
+  no_titlebar "$addr"
+  disp "hl.dsp.window.resize({ window = \"address:$addr\", x = $pw, y = $ph })"
+  disp "hl.dsp.window.move({ window = \"address:$addr\", x = $x, y = $y })"
+  raise "$addr"
 }
 
-close_pip() { # back on the video's desktop, or switched off
-  local browser home here before w
-  read -r browser home <"$state"
-  rm -f "$state"
+browser_close() { # $1 = browser window, $2 = its desktop
+  local here before w
   here=$(active_desktop)
   before=$(focused_on "$here")
-  key "$browser" "$CLOSE_KEY" # keeps the video playing in its tab
+  key "$1" "$CLOSE_KEY" # keeps the video playing in its tab
   # switched off from another desktop: keep typing where you were, not in the browser
-  [[ $here != "$home" ]] && refocus "$before" "$here"
+  [[ $here != "$2" ]] && refocus "$before" "$here"
   sleep 0.4
   w=$(pip_window)
   # the tab was changed meanwhile: close the window itself
   [[ -n $w ]] && disp "hl.dsp.window.close({ window = \"address:$(jq -r .address <<<"$w")\" })"
 }
 
+# ----------------------------------------------------------------- players --
+in_pip() { jq -e '.pinned and .floating and .fullscreen == 0' <<<"$1" >/dev/null; }
+
+player_enter() { # $1 = player window address, $2 = desktop we're on
+  local addr=$1 win="address:$1" w x y pw ph prev
+  w=$(client "$addr")
+  [[ -n $w ]] || return 1
+  # a repair keeps what it saved the first time
+  [[ -s $state ]] || jq -r '"player \(.address) \(.workspace.id) \(.at[0]) \(.at[1]) \(.size[0]) \(.size[1]) \(.fullscreen) \(.floating)"' <<<"$w" >"$state"
+  read -r x y pw ph <<<"$(spot)"
+  # Omarchy tiles a window its floating desktop floated as soon as it lands on
+  # a tiled desktop, which would undo the floating (and the pin) below.
+  disp "hl.dsp.window.tag({ window = \"$win\", tag = \"-omarchy-mode-floated\" })"
+  # Omarchy and the fullscreen change react a moment later, so check and redo
+  # until it really is a pinned floating window in its spot.
+  for _ in 1 2 3 4 5 6; do
+    w=$(client "$addr")
+    [[ -n $w ]] || return 1
+    # bring it here first: focusing it on its own desktop would switch back there
+    [[ $(jq .pinned <<<"$w") == true || $(jq -r .workspace.id <<<"$w") == "$2" ]] ||
+      disp "hl.dsp.window.move({ workspace = \"$2\", follow = false, window = \"$win\" })"
+    if [[ $(jq .fullscreen <<<"$w") != 0 ]]; then
+      prev=$(hyprctl activewindow -j | jq -r '.address // empty')
+      disp "hl.dsp.focus({ window = \"$win\" })"
+      disp 'hl.dsp.window.fullscreen({ mode = "fullscreen", action = "unset" })'
+      disp 'hl.dsp.window.fullscreen({ mode = "maximized", action = "unset" })'
+      [[ -n $prev && $prev != "$addr" ]] && disp "hl.dsp.focus({ window = \"address:$prev\" })"
+    fi
+    [[ $(jq .floating <<<"$w") == true ]] || disp "hl.dsp.window.float({ window = \"$win\", action = \"set\" })"
+    disp "hl.dsp.window.resize({ window = \"$win\", x = $pw, y = $ph })"
+    disp "hl.dsp.window.move({ window = \"$win\", x = $x, y = $y })"
+    # pin toggles: only when it isn't pinned yet
+    [[ $(jq .pinned <<<"$(client "$addr")") == true ]] || disp "hl.dsp.window.pin({ window = \"$win\" })"
+    raise "$addr"
+    disp "hl.dsp.window.tag({ window = \"$win\", tag = \"+$TAG\" })"
+    no_titlebar "$addr"
+    sleep 0.15
+    jq -e --argjson x "$x" --argjson y "$y" \
+      '.pinned and .floating and .fullscreen == 0 and ((.at[0] - $x) | fabs) <= 4 and ((.at[1] - $y) | fabs) <= 4' \
+      <<<"$(client "$addr")" >/dev/null && return 0
+  done
+}
+
+player_leave() { # back to its desktop, size, place and fullscreen (from the state file)
+  local kind addr home x y w h fs fl win cur
+  read -r kind addr home x y w h fs fl <"$state"
+  win="address:$addr"
+  cur=$(client "$addr")
+  [[ -n $cur ]] || return
+  [[ $(jq .pinned <<<"$cur") == true ]] && disp "hl.dsp.window.pin({ window = \"$win\" })"
+  disp "hl.dsp.window.tag({ window = \"$win\", tag = \"-$TAG\" })"
+  # Omarchy's floating-desktop tag (picked up if the PiP visited a floating
+  # desktop) would make Omarchy flip it back to floating on a tiled one.
+  disp "hl.dsp.window.tag({ window = \"$win\", tag = \"-omarchy-mode-floated\" })"
+  disp "hl.dsp.window.move({ workspace = \"$home\", follow = false, window = \"$win\" })"
+  if command -v omarchy-hyprland-workspace-layout-current >/dev/null &&
+    [[ $(omarchy-hyprland-workspace-layout-current "$home") == floating ]]; then
+    # back under Omarchy's floating desktop's care, as it was before
+    disp "hl.dsp.window.tag({ window = \"$win\", tag = \"+omarchy-mode-floated\" })"
+    disp "hl.dsp.window.tag({ window = \"$win\", tag = \"+omarchy-floating-workspace\" })"
+    disp "hl.dsp.window.resize({ window = \"$win\", x = $w, y = $h })"
+    disp "hl.dsp.window.move({ window = \"$win\", x = $x, y = $y })"
+  elif [[ $fl == true ]]; then # it was floating there before: as it was
+    no_titlebar "$addr"
+    disp "hl.dsp.window.resize({ window = \"$win\", x = $w, y = $h })"
+    disp "hl.dsp.window.move({ window = \"$win\", x = $x, y = $y })"
+  else
+    # tiled again; Omarchy may still react a moment later, so check
+    no_titlebar "$addr"
+    for _ in 1 2 3 4; do
+      [[ $(jq .floating <<<"$(client "$addr")") == true ]] || break
+      disp "hl.dsp.window.float({ window = \"$win\", action = \"unset\" })"
+      sleep 0.15
+    done
+  fi
+  if [[ $fs != 0 ]]; then
+    disp "hl.dsp.focus({ window = \"$win\" })"
+    disp 'hl.dsp.window.fullscreen({ mode = "fullscreen", action = "set" })'
+  fi
+}
+
+# ------------------------------------------------------------ open / close --
+open_from() { # $1 = desktop we left, $2 = desktop we're on
+  [[ -e $OFF || -s $state ]] && return
+  [[ -n $(pip_window) ]] && return # a PiP you opened yourself is up
+  local list kind addr pid s
+  list=$(sources_on "$1")
+  [[ -n $list ]] || return
+  sleep 0.15 # let Hyprland finish switching and focus a window there
+  [[ $(active_desktop) == "$2" ]] || return # moved on again
+  while read -r kind addr pid; do
+    s=$(media "$pid")
+    if [[ $kind == browser ]]; then
+      [[ $s == Playing ]] && browser_open "$addr" "$1" "$2" && return
+    else
+      # a player that doesn't report its playback counts as playing
+      [[ $s == Playing || $s == none ]] && { player_enter "$addr" "$2"; return; }
+    fi
+  done <<<"$list"
+}
+
+close_pip() { # back on its desktop, or switched off
+  local kind addr home
+  [[ -s $state ]] || return 0
+  read -r kind addr home _ <"$state"
+  if [[ $kind == browser ]]; then
+    rm -f "$state"
+    browser_close "$addr" "$home"
+  else
+    remember
+    player_leave
+    rm -f "$state"
+  fi
+}
+
 # ------------------------------------------------------------------ switch --
 switch() { # $1 = on | off
   if [[ $1 == off ]]; then
     : >"$OFF"
-    [[ -s $state ]] && close_pip
+    close_pip
     [[ $NOTIFY == 1 ]] && notify-send -a "Picture-in-picture" -t 2000 "Auto picture-in-picture off" "Videos stay on their desktop."
   else
     rm -f "$OFF"
     [[ $NOTIFY == 1 ]] && notify-send -a "Picture-in-picture" -t 2000 "Auto picture-in-picture on" "Leave a desktop with a playing video to get a PiP."
   fi
-  # your own extras (another player's PiP, say): ~/.config/auto-pip/on-switch on|off
+  # your own extras: ~/.config/auto-pip/on-switch on|off
   [[ -x $CONF_DIR/on-switch ]] && "$CONF_DIR/on-switch" "$1"
   # the bar icon, if it's there
   command -v omarchy-shell >/dev/null && omarchy-shell -q okox.auto-pip refresh >/dev/null 2>&1
@@ -167,46 +301,53 @@ switch() { # $1 = on | off
 }
 
 # ----------------------------------------------------------------- watcher --
+on_desktop() { # $1 = desktop we switched to
+  [[ $1 =~ ^[0-9]+$ ]] || return # ignore special workspaces
+  local from=$prev kind addr home w
+  prev=$1
+  # already on another desktop again (switches pile up while we wait): act on the newest only
+  [[ $(active_desktop) == "$1" ]] || return
+  if [[ -s $state ]]; then
+    read -r kind addr home _ <"$state"
+    w=$(current)
+    if [[ -z $w ]]; then
+      rm -f "$state" # you closed it yourself
+    elif [[ $1 == "$home" || -e $OFF ]]; then
+      close_pip
+      return
+    elif [[ $kind == player ]] && ! in_pip "$w"; then
+      player_enter "$addr" "$1" # something undid the PiP: do it again
+      return
+    else # Omarchy re-adds the title-bar tag on floating desktops
+      ( exec 8>&-; a=$(jq -r .address <<<"$w"); for t in 0.05 0.25; do sleep $t; no_titlebar "$a"; raise "$a"; done ) &
+      return
+    fi
+  fi
+  [[ $from =~ ^[0-9]+$ && $from != "$1" ]] && open_from "$from" "$1"
+}
+
 watch() {
   local sock="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
   [[ -S $sock ]] || { echo "auto-pip: no Hyprland session found" >&2; exit 1; }
   exec 8>"$RUN/lock"
   flock -n 8 || { echo "auto-pip: already running" >&2; exit 0; }
-  rm -f "$state"
   prev=$(active_desktop)
+  # restarted while a PiP is up: keep it, and fix it up for this desktop
+  if [[ -s $state ]]; then
+    if [[ -n $(current) ]]; then on_desktop "$prev"; else rm -f "$state"; fi
+  fi
   trap 'pkill -P $$ 2>/dev/null' EXIT
   trap 'exit 0' TERM INT
   socat -U - "UNIX-CONNECT:$sock" 8>&- | while IFS= read -r line; do
     case $line in
       workspacev2\>\>*) id=${line#*>>}; on_desktop "${id%%,*}" ;;
-      activewindowv2\>\>* | movewindowv2\>\>*) [[ -s $state ]] && remember ;;
+      # after a drag or resize you click or focus something: save the spot
+      activewindowv2\>\>* | movewindowv2\>\>*)
+        [[ -s $state ]] && { remember; w=$(current); [[ -n $w ]] && in_pip "$w" && raise "$(jq -r .address <<<"$w")"; } ;;
+      closewindow\>\>*) [[ -s $state && -z $(current) ]] && rm -f "$state" ;;
     esac
   done
   exit 1 # Hyprland went away (or socat failed); systemd restarts us if it's back
-}
-
-on_desktop() { # $1 = desktop we switched to
-  [[ $1 =~ ^[0-9]+$ ]] || return # ignore special workspaces
-  local from=$prev home w
-  prev=$1
-  # already on another desktop again (switches pile up while we wait): act on the newest only
-  [[ $(active_desktop) == "$1" ]] || return
-  if [[ -s $state ]]; then
-    w=$(pip_window)
-    if [[ -z $w ]]; then
-      rm -f "$state" # you closed it yourself
-    else
-      read -r _ home <"$state"
-      if [[ $1 == "$home" || -e $OFF ]]; then
-        close_pip
-      else # Omarchy re-adds the title-bar tag on floating desktops
-        ( exec 8>&-; a=$(jq -r .address <<<"$w"); for t in 0.05 0.25; do sleep $t; no_titlebar "$a"
-          disp "hl.dsp.window.alter_zorder({ window = \"address:$a\", mode = \"top\" })"; done ) &
-      fi
-      return
-    fi
-  fi
-  [[ $from =~ ^[0-9]+$ && $from != "$1" ]] && open_pip "$from" "$1"
 }
 
 # -------------------------------------------------------------------- main --
@@ -215,7 +356,7 @@ case ${1:-} in
   on | off) switch "$1" ;;
   toggle) [[ -e $OFF ]] && switch on || switch off ;;
   status) [[ -e $OFF ]] && echo off || echo on ;;
-  close) [[ -s $state ]] && close_pip; exit 0 ;;
+  close) close_pip; exit 0 ;;
   --version | version) echo "auto-pip $VERSION" ;;
-  *) sed -n '9,12s/^# \{0,1\}//p' "$0"; [[ ${1:-} =~ ^(-h|--help|help)$ ]] || exit 2 ;;
+  *) sed -n '13,16s/^# \{0,1\}//p' "$0"; [[ ${1:-} =~ ^(-h|--help|help)$ ]] || exit 2 ;;
 esac

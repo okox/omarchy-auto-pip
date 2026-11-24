@@ -4,7 +4,11 @@
 # Browser window classes to watch (regex, any case).
 #BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge'
 
-# Only pop out from windows whose title matches (regex). Empty = any page.
+# Video players whose own window becomes the PiP: window classes (regex, any
+# case; see `hyprctl clients`). Empty = browsers only.
+#PLAYERS='mpv|vlc|celluloid'
+
+# Browsers: only pop out from windows whose title matches (regex). Empty = any page.
 # Example, YouTube and Twitch only:
 #TITLE='YouTube|Twitch'
 
@@ -21,5 +25,5 @@
 # Notification when switched on or off (0 = none).
 #NOTIFY=1
 
-# Where the PiP's spot is remembered (to share it with another PiP script).
+# Where the PiP's spot is remembered.
 #SPOT_FILE="$HOME/.local/state/auto-pip/spot"
