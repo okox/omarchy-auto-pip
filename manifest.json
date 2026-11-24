@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "okox.auto-pip",
   "name": "Auto Picture-in-Picture",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "author": "okox",
   "license": "MIT",
   "description": "Leave a desktop with a playing video (Chromium or Firefox browser, or a video player) and it follows you in a picture-in-picture window; come back and it pops back in. The bar icon switches it on and off. Run setup.sh once.",

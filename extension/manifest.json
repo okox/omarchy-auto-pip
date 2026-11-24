@@ -1,13 +1,31 @@
 {
   "manifest_version": 3,
   "name": "Auto Picture-in-Picture",
-  "version": "1.0.0",
-  "description": "Opens and closes picture-in-picture for the playing video when the auto-pip desktop watcher asks (Hyprland).",
+  "version": "1.3.0",
+  "description": "Opens and closes picture-in-picture for the video playing in any tab, when the auto-pip desktop watcher asks (Hyprland). Runs only on its two shortcuts.",
   "homepage_url": "https://github.com/okox/omarchy-auto-pip",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
   "commands": {
-    "pip-enter": { "suggested_key": { "default": "Alt+Shift+8" }, "description": "Picture-in-picture for the playing video" },
-    "pip-exit": { "suggested_key": { "default": "Alt+Shift+9" }, "description": "Close picture-in-picture" }
+    "pip-enter": {
+      "suggested_key": {
+        "default": "Alt+Shift+8"
+      },
+      "description": "Picture-in-picture for the playing video"
+    },
+    "pip-exit": {
+      "suggested_key": {
+        "default": "Alt+Shift+9"
+      },
+      "description": "Close picture-in-picture"
+    }
   },
-  "background": { "service_worker": "background.js" }
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ]
 }

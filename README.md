@@ -8,8 +8,9 @@ it pops back in as if nothing happened.
 It works with three kinds of source:
 
 - **Chromium-based browsers** (Chromium, Brave, Chrome, Vivaldi, Edge):
-  YouTube, Twitch or any other site. The video moves into the browser's own
-  picture-in-picture window and carries on in its tab when it closes.
+  YouTube, Twitch or any other site, in any tab of the window, not only the
+  one on screen. The video moves into the browser's own picture-in-picture
+  window and carries on in its tab when it closes.
 - **Firefox-based browsers** (Firefox, LibreWolf, Zen, Floorp, Waterfox): the
   same, through Firefox's built-in picture-in-picture shortcut, so no
   extension is needed. *New in 1.2 and not yet tested: reports welcome.*
@@ -131,7 +132,12 @@ playing.
   **a tiny browser extension** with two keyboard shortcuts, Alt+Shift+8 (open
   PiP for the biggest playing video in the tab) and Alt+Shift+9 (close it).
   It has no background activity, reads nothing and sends nothing anywhere;
-  it only acts when one of its shortcuts is pressed. The watcher sends the
+  it only acts when one of its shortcuts is pressed. It asks for access to
+  all sites only so it can find the playing video in any tab.
+  Chromium lets only the tab in front use a shortcut, so for a video in
+  another tab the watcher presses twice: the first press brings that tab
+  forward, the second opens the PiP, and your tab goes back on top. That
+  window is on the desktop you just left, so you don't see it. The watcher sends the
   browser window that shortcut with Hyprland's `send_shortcut`, pins the PiP
   in its spot, and sends the closing one when you come back.
 
@@ -162,7 +168,12 @@ For Waybar, a custom module can show `auto-pip status` and run
 - **Nothing happens:** check the browser has loaded the extension
   (`chrome://extensions`) and that its shortcuts are set
   (`chrome://extensions/shortcuts`). Then `journalctl --user -u auto-pip`.
-- **Pops out from the wrong window:** set `TITLE` so only video sites count,
+- **Changed the extension's files** (an update, or editing them): click the
+  reload arrow on *Auto Picture-in-Picture* in `chrome://extensions`.
+  Chromium keeps running its old copy of the code otherwise, even after a
+  restart.
+- **Pops out from the wrong window:** set `TITLE` so only video sites count
+  (it matches the tab in front, so a video in another tab won't count then),
   or `PLAYERS` to just the players you want.
 - **Firefox didn't pop out:** check `about:config` has
   `media.videocontrols.picture-in-picture.keyboard-controls.enabled` and
