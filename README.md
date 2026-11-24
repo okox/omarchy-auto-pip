@@ -154,6 +154,11 @@ For Waybar, a custom module can show `auto-pip status` and run
 
 ## Troubleshooting
 
+- **Browser videos don't pop out, players do:** open
+  `chrome://extensions/shortcuts` and check *Auto Picture-in-Picture* has
+  Alt+Shift+8 and Alt+Shift+9. A shortcut only goes to the first extension
+  that asks for it, so if another extension (or an older copy of this one)
+  has them, set them by hand. `setup.sh` warns when this happens.
 - **Nothing happens:** check the browser has loaded the extension
   (`chrome://extensions`) and that its shortcuts are set
   (`chrome://extensions/shortcuts`). Then `journalctl --user -u auto-pip`.

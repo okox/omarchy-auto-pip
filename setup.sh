@@ -60,6 +60,22 @@ for b in chromium brave; do
   fi
 done
 
+# Shortcuts only go to the first extension that asks for them. If a copy of
+# this extension loaded from another folder (so with another ID) had them,
+# Chromium keeps them there, and this one gets none. Say so.
+shortcut_check() { # $1 = browser profile folder
+  local prefs="$1/Default/Preferences" id
+  [[ -f $prefs ]] || return 0
+  id=$(jq -r --arg p "$EXT" '[.extensions.settings // {} | to_entries[] | select(.value.path == $p) | .key][0] // empty' "$prefs" 2>/dev/null)
+  [[ -n $id ]] || return 0 # not loaded yet: it gets the shortcuts on first start
+  jq -e --arg id "$id" '[.extensions.commands // {} | to_entries[] | select(.value.extension == $id)] | length > 0' \
+    "$prefs" >/dev/null 2>&1 && return 0
+  warn "The extension in ${1##*/} has no keyboard shortcuts (another copy took them)."
+  warn "Open chrome://extensions/shortcuts there and set Auto Picture-in-Picture to Alt+Shift+8 / Alt+Shift+9."
+}
+shortcut_check "$CONF/chromium"
+shortcut_check "$CONF/BraveSoftware/Brave-Browser"
+
 # 4. The watcher, as a user service that runs with your Hyprland session.
 cp "$PLUGIN/systemd/auto-pip.service" "$UNITS/"
 systemctl --user daemon-reload

@@ -19,7 +19,7 @@
 #
 # Settings: ~/.config/auto-pip/config (see examples/config).
 
-VERSION=1.2.0
+VERSION=1.2.1
 
 # ---------------------------------------------------------------- settings --
 BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge' # Chromium-based browser classes (regex, any case)
