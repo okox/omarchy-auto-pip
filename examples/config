@@ -4,6 +4,9 @@
 # Browser window classes to watch (regex, any case).
 #BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge'
 
+# Firefox-based browsers (their own PiP shortcut, no extension). Empty = none.
+#FIREFOXES='firefox|librewolf|zen|floorp|waterfox'
+
 # Video players whose own window becomes the PiP: window classes (regex, any
 # case; see `hyprctl clients`). Empty = browsers only.
 #PLAYERS='mpv|vlc|celluloid'

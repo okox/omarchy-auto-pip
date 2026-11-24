@@ -3,12 +3,14 @@
 #
 # Leave a desktop where a video is playing and it follows you in a small
 # pinned window on every desktop. Go back to that desktop and it pops back in.
-# Two kinds of source:
+# Kinds of source:
 #   browsers  the video pops out into the browser's own picture-in-picture
-#             window (through the extension in ../extension) and carries on in
-#             its tab when it closes
+#             window and carries on in its tab when it closes. Chromium-based
+#             ones through the extension in ../extension, Firefox-based ones
+#             through Firefox's own Ctrl+Shift+] toggle
 #   players   the player's own window (mpv, VLC, Celluloid...) shrinks into the
 #             corner, then returns to its size, place and fullscreen
+# The PiP moves to whichever monitor you're on, same corner.
 #
 #   auto-pip watch                 the watcher (run by auto-pip.service)
 #   auto-pip on | off | toggle     switch it on or off (also closes an open PiP)
@@ -17,15 +19,17 @@
 #
 # Settings: ~/.config/auto-pip/config (see examples/config).
 
-VERSION=1.1.0
+VERSION=1.2.0
 
 # ---------------------------------------------------------------- settings --
-BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge' # browser window classes (regex, any case)
+BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge' # Chromium-based browser classes (regex, any case)
+FIREFOXES='firefox|librewolf|zen|floorp|waterfox' # Firefox-based browser classes; empty = none
 TITLE=''                       # browsers: only windows whose title matches (regex); empty = any
 PLAYERS='mpv|vlc|celluloid'    # player window classes (regex, any case); empty = none
 SIZE='480 270'                 # first-time PiP size; afterwards it remembers yours
 MARGIN=12                      # gap to the screen corner
 MODS='ALT SHIFT' OPEN_KEY=8 CLOSE_KEY=9 # must match the extension's shortcuts
+FF_MODS='CTRL SHIFT' FF_KEY=bracketright  # Firefox's own picture-in-picture toggle
 NOTIFY=1                       # notification when switched on/off
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/auto-pip"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/auto-pip"
@@ -36,7 +40,7 @@ SPOT_FILE="$STATE_DIR/spot"    # "x y w h" where you last left the PiP
 OFF="$STATE_DIR/off"           # exists = switched off
 RUN="${XDG_RUNTIME_DIR:-/run/user/$UID}/auto-pip"
 # While a PiP is open:
-#   browser <browser window> <home desktop>
+#   browser|firefox <browser window> <home desktop>
 #   player  <player window> <home desktop> <x> <y> <w> <h> <fullscreen> <floating>
 state="$RUN/open"
 PIP_TITLE='^Picture.?in.?[Pp]icture$'
@@ -47,8 +51,14 @@ mkdir -p "$STATE_DIR" "$RUN"
 # ----------------------------------------------------------------- helpers --
 disp() { hyprctl dispatch "$1" >/dev/null 2>&1; }
 
-key() { # $1 = window address, $2 = key: send the extension's shortcut to that window
-  disp "hl.dsp.send_shortcut({ mods = \"$MODS\", key = \"$2\", window = \"address:$1\" })"
+key() { # $1 = window address, $2 = modifiers, $3 = key: send that shortcut to the window
+  disp "hl.dsp.send_shortcut({ mods = \"$2\", key = \"$3\", window = \"address:$1\" })"
+}
+
+pip_key() { # $1 = window address, $2 = browser kind, $3 = open | close
+  if [[ $2 == firefox ]]; then key "$1" "$FF_MODS" "$FF_KEY" # one key toggles it
+  elif [[ $3 == open ]]; then key "$1" "$MODS" "$OPEN_KEY"
+  else key "$1" "$MODS" "$CLOSE_KEY"; fi
 }
 
 active_desktop() { hyprctl activeworkspace -j | jq -r .id; }
@@ -76,9 +86,11 @@ media() { # $1 = pid: Playing / Paused / Stopped from its MPRIS player, "none" i
 }
 
 sources_on() { # $1 = desktop: "kind address pid" per browser/player window there, most recently used first
-  hyprctl clients -j | jq -r --argjson ws "$1" --arg b "$BROWSERS" --arg t "$TITLE" --arg pl "$PLAYERS" --arg p "$PIP_TITLE" '
+  hyprctl clients -j | jq -r --argjson ws "$1" --arg b "$BROWSERS" --arg f "$FIREFOXES" --arg t "$TITLE" \
+    --arg pl "$PLAYERS" --arg p "$PIP_TITLE" '
     [.[] | select(.workspace.id == $ws and .mapped and (.pinned | not) and (.title | test($p) | not))
-         | if (.class | test($b; "i")) and (.title | test($t)) then . + {kind: "browser"}
+         | if $f != "" and (.class | test($f; "i")) and (.title | test($t)) then . + {kind: "firefox"}
+           elif (.class | test($b; "i")) and (.title | test($t)) then . + {kind: "browser"}
            elif $pl != "" and (.class | test("^(" + $pl + ")$"; "i")) then . + {kind: "player"}
            else empty end]
     | sort_by(.focusHistoryID) | .[] | "\(.kind) \(.address) \(.pid)"'
@@ -90,26 +102,66 @@ no_titlebar() { # Omarchy draws a title bar on windows on floating desktops; not
 
 raise() { disp "hl.dsp.window.alter_zorder({ window = \"address:$1\", mode = \"top\" })"; }
 
-spot() { # prints "x y w h": the remembered spot if it fits this screen, else the bottom-right corner
-  local mon x y sx sy sw sh
-  mon=$(hyprctl monitors -j | jq -c 'first(.[] | select(.focused))')
-  if [[ -s $SPOT_FILE ]] && read -r sx sy sw sh <"$SPOT_FILE" &&
-    jq -e --argjson x "$sx" --argjson y "$sy" --argjson w "$sw" --argjson h "$sh" \
-      '$w >= 160 and $h >= 90 and $x >= .x and $y >= .y and
-       $x + $w <= .x + (.width / .scale | floor) and $y + $h <= .y + (.height / .scale | floor)' <<<"$mon" >/dev/null 2>&1; then
-    echo "$sx $sy $sw $sh"
-    return
+# Monitor maths, in layout pixels. reserved = [left, top, right, bottom] (the bar).
+JQ_MON='
+  def g: {x, y, w: (.width / .scale | floor), h: (.height / .scale | floor),
+          l: .reserved[0], t: .reserved[1], r: .reserved[2], b: .reserved[3]};
+  def holds($x; $y; $w; $h): g as $m |
+    ($x + $w / 2) >= $m.x and ($x + $w / 2) < $m.x + $m.w and ($y + $h / 2) >= $m.y and ($y + $h / 2) < $m.y + $m.h;
+  # the same corner and gaps on monitor $d as on monitor $s, shrunk to fit
+  def carry($s; $d; $x; $y; $w; $h): ($s | g) as $S | ($d | g) as $D |
+    ([$w, $D.w - $D.l - $D.r] | min) as $nw | ([$h, $D.h - $D.t - $D.b] | min) as $nh |
+    ($x - $S.x - $S.l) as $gl | ($S.x + $S.w - $S.r - $x - $w) as $gr |
+    ($y - $S.y - $S.t) as $gt | ($S.y + $S.h - $S.b - $y - $h) as $gb |
+    (if $gl <= $gr then $D.x + $D.l + $gl else $D.x + $D.w - $D.r - $gr - $nw end) as $nx |
+    (if $gt <= $gb then $D.y + $D.t + $gt else $D.y + $D.h - $D.b - $gb - $nh end) as $ny |
+    "\([[$nx, $D.x + $D.l] | max, $D.x + $D.w - $D.r - $nw] | min | floor) \([[$ny, $D.y + $D.t] | max, $D.y + $D.h - $D.b - $nh] | min | floor) \($nw) \($nh)";
+'
+
+spot() { # prints "x y w h" on the monitor you're on: the remembered spot (carried
+  # over to this monitor if you left it on another), else the bottom-right corner
+  local mons sx sy sw sh
+  mons=$(hyprctl monitors -j)
+  if [[ -s $SPOT_FILE ]] && read -r sx sy sw sh <"$SPOT_FILE" && [[ "$sx$sy$sw$sh" =~ ^-?[0-9-]+$ ]] &&
+    ((sw >= 160 && sh >= 90)); then
+    jq -r --argjson x "$sx" --argjson y "$sy" --argjson w "$sw" --argjson h "$sh" "$JQ_MON"'
+      first(.[] | select(.focused)) as $d | (first(.[] | select(holds($x; $y; $w; $h))) // $d) as $s |
+      carry($s; $d; $x; $y; $w; $h)' <<<"$mons" && return
   fi
-  x=$(jq --argjson w "$PIP_W" --argjson m "$MARGIN" '.x + (.width / .scale | floor) - .reserved[2] - $w - $m' <<<"$mon")
-  y=$(jq --argjson h "$PIP_H" --argjson m "$MARGIN" '.y + (.height / .scale | floor) - .reserved[3] - $h - $m' <<<"$mon")
-  echo "$x $y $PIP_W $PIP_H"
+  jq -r --argjson w "$PIP_W" --argjson h "$PIP_H" --argjson m "$MARGIN" "$JQ_MON"'
+    first(.[] | select(.focused)) | g | "\(.x + .w - .r - $w - $m) \(.y + .h - .b - $h - $m) \($w) \($h)"' <<<"$mons"
+}
+
+follow_monitor() { # the PiP onto the monitor you're on, same corner (pinned windows stay on theirs)
+  local w mons to
+  w=$(current)
+  [[ -n $w ]] && in_pip "$w" || return
+  mons=$(hyprctl monitors -j)
+  to=$(jq -r --argjson w "$w" "$JQ_MON"'
+    first(.[] | select(.focused)) as $d | select($d.id != $w.monitor) |
+    first(.[] | select(.id == $w.monitor)) as $s |
+    carry($s; $d; $w.at[0]; $w.at[1]; $w.size[0]; $w.size[1]) + " " + $d.name' <<<"$mons")
+  [[ -n $to ]] || return
+  local x y pw ph name addr
+  read -r x y pw ph name <<<"$to"
+  addr=$(jq -r .address <<<"$w")
+  disp "hl.dsp.window.move({ window = \"address:$addr\", monitor = \"$name\" })"
+  # Hyprland settles the monitor move a moment later: place it until it stays put
+  for _ in 1 2 3 4; do
+    disp "hl.dsp.window.resize({ window = \"address:$addr\", x = $pw, y = $ph })"
+    disp "hl.dsp.window.move({ window = \"address:$addr\", x = $x, y = $y })"
+    sleep 0.1
+    jq -e --argjson x "$x" --argjson y "$y" '((.at[0] - $x) | fabs) <= 2 and ((.at[1] - $y) | fabs) <= 2' \
+      <<<"$(client "$addr")" >/dev/null && break
+  done
+  raise "$addr"
 }
 
 current() { # the open PiP's window as JSON, empty if none
   local kind addr
   [[ -s $state ]] || return
   read -r kind addr _ <"$state"
-  if [[ $kind == browser ]]; then pip_window; else client "$addr"; fi
+  if [[ $kind == player ]]; then client "$addr"; else pip_window; fi
 }
 
 remember() { # save where the PiP is, after you've dragged or resized it
@@ -134,10 +186,10 @@ refocus() { # $1 = window to give the keyboard back to (sending a key moves it),
 }
 
 # ---------------------------------------------------------------- browsers --
-browser_open() { # $1 = browser window, $2 = its desktop, $3 = desktop we're on
+browser_open() { # $1 = browser window, $2 = its desktop, $3 = desktop we're on, $4 = browser | firefox
   local before w x y pw ph
   before=$(focused_on "$3")
-  key "$1" "$OPEN_KEY"
+  pip_key "$1" "$4" open
   for _ in {1..12}; do
     sleep 0.1
     w=$(pip_window)
@@ -145,7 +197,7 @@ browser_open() { # $1 = browser window, $2 = its desktop, $3 = desktop we're on
   done
   refocus "$before" "$3"
   [[ -n $w ]] || return 1 # nothing was playing in that window's tab
-  echo "browser $1 $2" >"$state"
+  echo "$4 $1 $2" >"$state"
   read -r x y pw ph <<<"$(spot)"
   local addr
   addr=$(jq -r .address <<<"$w")
@@ -155,11 +207,11 @@ browser_open() { # $1 = browser window, $2 = its desktop, $3 = desktop we're on
   raise "$addr"
 }
 
-browser_close() { # $1 = browser window, $2 = its desktop
+browser_close() { # $1 = browser window, $2 = its desktop, $3 = browser | firefox
   local here before w
   here=$(active_desktop)
   before=$(focused_on "$here")
-  key "$1" "$CLOSE_KEY" # keeps the video playing in its tab
+  pip_key "$1" "$3" close # keeps the video playing in its tab
   # switched off from another desktop: keep typing where you were, not in the browser
   [[ $here != "$2" ]] && refocus "$before" "$here"
   sleep 0.4
@@ -260,8 +312,8 @@ open_from() { # $1 = desktop we left, $2 = desktop we're on
   [[ $(active_desktop) == "$2" ]] || return # moved on again
   while read -r kind addr pid; do
     s=$(media "$pid")
-    if [[ $kind == browser ]]; then
-      [[ $s == Playing ]] && browser_open "$addr" "$1" "$2" && return
+    if [[ $kind != player ]]; then
+      [[ $s == Playing ]] && browser_open "$addr" "$1" "$2" "$kind" && return
     else
       # a player that doesn't report its playback counts as playing
       [[ $s == Playing || $s == none ]] && { player_enter "$addr" "$2"; return; }
@@ -273,9 +325,9 @@ close_pip() { # back on its desktop, or switched off
   local kind addr home
   [[ -s $state ]] || return 0
   read -r kind addr home _ <"$state"
-  if [[ $kind == browser ]]; then
+  if [[ $kind != player ]]; then
     rm -f "$state"
-    browser_close "$addr" "$home"
+    browser_close "$addr" "$home" "$kind"
   else
     remember
     player_leave
@@ -318,7 +370,9 @@ on_desktop() { # $1 = desktop we switched to
     elif [[ $kind == player ]] && ! in_pip "$w"; then
       player_enter "$addr" "$1" # something undid the PiP: do it again
       return
-    else # Omarchy re-adds the title-bar tag on floating desktops
+    else
+      follow_monitor # a desktop on another monitor: bring it along
+      # Omarchy re-adds the title-bar tag on floating desktops
       ( exec 8>&-; a=$(jq -r .address <<<"$w"); for t in 0.05 0.25; do sleep $t; no_titlebar "$a"; raise "$a"; done ) &
       return
     fi
@@ -344,6 +398,8 @@ watch() {
       # after a drag or resize you click or focus something: save the spot
       activewindowv2\>\>* | movewindowv2\>\>*)
         [[ -s $state ]] && { remember; w=$(current); [[ -n $w ]] && in_pip "$w" && raise "$(jq -r .address <<<"$w")"; } ;;
+      # clicked or moved over to another monitor
+      focusedmonv2\>\>*) [[ -s $state ]] && follow_monitor ;;
       closewindow\>\>*) [[ -s $state && -z $(current) ]] && rm -f "$state" ;;
     esac
   done
@@ -358,5 +414,5 @@ case ${1:-} in
   status) [[ -e $OFF ]] && echo off || echo on ;;
   close) close_pip; exit 0 ;;
   --version | version) echo "auto-pip $VERSION" ;;
-  *) sed -n '13,16s/^# \{0,1\}//p' "$0"; [[ ${1:-} =~ ^(-h|--help|help)$ ]] || exit 2 ;;
+  *) sed -n 's/^#   \(auto-pip .*\)/  \1/p' "$0"; [[ ${1:-} =~ ^(-h|--help|help)$ ]] || exit 2 ;;
 esac

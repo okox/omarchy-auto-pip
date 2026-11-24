@@ -5,11 +5,14 @@ follows you. Leave a desktop where a video is playing and it pops out into a
 small window pinned in a corner of every desktop. Go back to that desktop and
 it pops back in as if nothing happened.
 
-It works with two kinds of source:
+It works with three kinds of source:
 
-- **Browsers** (Chromium, Brave, Chrome, Vivaldi, Edge): YouTube, Twitch or any
-  other site. The video moves into the browser's own picture-in-picture
-  window and carries on in its tab when it closes.
+- **Chromium-based browsers** (Chromium, Brave, Chrome, Vivaldi, Edge):
+  YouTube, Twitch or any other site. The video moves into the browser's own
+  picture-in-picture window and carries on in its tab when it closes.
+- **Firefox-based browsers** (Firefox, LibreWolf, Zen, Floorp, Waterfox): the
+  same, through Firefox's built-in picture-in-picture shortcut, so no
+  extension is needed. *New in 1.2 and not yet tested: reports welcome.*
 - **Video players** (mpv, VLC, Celluloid, or any you add): the player's own
   window shrinks into the corner, then returns to its size, place and
   fullscreen. Anything that plays in mpv counts, such as an Ace Stream or IPTV
@@ -26,6 +29,8 @@ untested so far.
 - **Only when something is playing.** A paused video stays where it is.
   (Players that don't report whether they're playing count as playing while
   their window is open; for mpv, install `mpv-mpris`, which Omarchy has.)
+- **Follows you across monitors.** Switch to another monitor and the PiP moves
+  to the same corner there.
 - **One at a time.** If several things play on the desktop you leave, the
   window you used last wins.
 - **It remembers where you put it.** Drag or resize the PiP once and it opens
@@ -42,7 +47,7 @@ untested so far.
 
 - Hyprland **0.56 or newer** (Lua dispatchers).
 - `jq`, `socat`, `busctl` (systemd) and `flock`. All come with Omarchy.
-- A Chromium-based browser and/or a video player.
+- A Chromium- or Firefox-based browser and/or a video player.
 - Omarchy for the bar icon. Without it, everything else works; see
   [Without Omarchy](#without-omarchy).
 
@@ -65,7 +70,8 @@ Setup:
    runs with your desktop session.
 4. Puts the icon on the right of the bar.
 
-Then **restart your browser once** so it loads the extension.
+Then **restart your browser once** so it loads the extension. Firefox needs
+nothing.
 
 **Google Chrome, Vivaldi, Edge:** Chrome ignores the extension flag, so load
 it by hand: open `chrome://extensions`, switch on *Developer mode*, click
@@ -117,7 +123,9 @@ playing.
 - **Players:** it floats, shrinks, pins and moves the player's window with
   Hyprland dispatchers, after noting its size, place and fullscreen. Coming
   back reverses all of it.
-- **Browsers:** a page may only open picture-in-picture in response to
+- **Firefox:** it sends the window Firefox's own picture-in-picture toggle,
+  Ctrl+Shift+], to open and again to close.
+- **Chromium browsers:** a page may only open picture-in-picture in response to
   something you do, such as a click or a keypress. So there's a second half:
 
   **a tiny browser extension** with two keyboard shortcuts, Alt+Shift+8 (open
@@ -151,6 +159,9 @@ For Waybar, a custom module can show `auto-pip status` and run
   (`chrome://extensions/shortcuts`). Then `journalctl --user -u auto-pip`.
 - **Pops out from the wrong window:** set `TITLE` so only video sites count,
   or `PLAYERS` to just the players you want.
+- **Firefox didn't pop out:** check `about:config` has
+  `media.videocontrols.picture-in-picture.keyboard-controls.enabled` and
+  `media.videocontrols.picture-in-picture.enabled` set to true.
 - **A player didn't pop out:** check its class (`hyprctl clients`) is in
   `PLAYERS`, and that it's playing (`busctl --user list | grep mpris`).
 - **Flatpak or Snap browsers** aren't supported yet.
