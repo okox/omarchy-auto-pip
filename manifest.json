@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "okox.auto-pip",
+  "name": "Auto Picture-in-Picture",
+  "version": "1.0.0",
+  "author": "okox",
+  "license": "MIT",
+  "description": "Leave a desktop with a playing video and it pops out into a picture-in-picture window that follows you; come back and it pops back in. The bar icon switches it on and off. Run setup.sh once.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Auto PiP",
+    "description": "Shows whether auto picture-in-picture is on; click to switch it.",
+    "category": "Status",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

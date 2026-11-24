@@ -1,0 +1,25 @@
+# Auto picture-in-picture settings: ~/.config/auto-pip/config
+# Plain shell variables. After a change: systemctl --user restart auto-pip
+
+# Browser window classes to watch (regex, any case).
+#BROWSERS='chromium|chrome|brave|vivaldi|microsoft-edge'
+
+# Only pop out from windows whose title matches (regex). Empty = any page.
+# Example, YouTube and Twitch only:
+#TITLE='YouTube|Twitch'
+
+# Size of the first PiP, and the gap to the screen corner. Once you drag or
+# resize a PiP, it opens there from then on.
+#SIZE='480 270'
+#MARGIN=12
+
+# The extension's shortcuts. Change both here and in chrome://extensions/shortcuts.
+#MODS='ALT SHIFT'
+#OPEN_KEY=8
+#CLOSE_KEY=9
+
+# Notification when switched on or off (0 = none).
+#NOTIFY=1
+
+# Where the PiP's spot is remembered (to share it with another PiP script).
+#SPOT_FILE="$HOME/.local/state/auto-pip/spot"
